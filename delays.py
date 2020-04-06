@@ -23,11 +23,11 @@ class TruncatedExponentialDelay(NetworkDelay):
 
 
 class TruncatedLogNormalDelay(NetworkDelay):
-    def __init__(self, mean=10, sigma=1):
+    def __init__(self, mean=10, dev=1):
         super().__init__()
         assert np.log(mean) > 1
-        self.mu = np.log(mean) - 1
-        self.sigma = sigma
+        self.sigma = np.sqrt(np.log(np.square(dev)/np.square(mean) + 1))
+        self.mu = np.log(mean) - np.square(self.sigma)/2
 
     def __call__(self):
         return np.random.lognormal(self.mu, self.sigma) + 1
