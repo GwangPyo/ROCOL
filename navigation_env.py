@@ -4,23 +4,23 @@ import numpy as np
 import Box2D
 from Box2D.b2 import (edgeShape, circleShape, fixtureDef, polygonShape, revoluteJointDef, contactListener, distance)
 
-
 import gym
 from gym import spaces
 from gym.utils import seeding, EzPickle
 from collections import deque
+import copy
+
 
 
 # Routing Optimization Avoiding Obstacle.
 
-FPS = 25
+FPS = 5
 SCALE = 30.0  # affects how fast-paced the game is, forces should be adjusted as well
 
 # Drone's shape
 DRONE_POLY = [
-    (-14, +17), (-17, 0), (-17, -10),
-    (+17, -10), (+17, 0), (+14, +17)
-]
+    (-11, +14), (-14, 0), (-14, -7),
+    (+14, -7), (14, 0), (+11, +14)]
 
 OBSTACLE_INIT_VEL = [(1, 0), (-1, 0), (0, 1), (0, -1),
                 (1/np.sqrt(2), 1/np.sqrt(2)), (1/np.sqrt(2), -1/np.sqrt(2)), (-1/np.sqrt(2), 1/np.sqrt(2)),
@@ -39,21 +39,17 @@ WALL_POLY = [
 ]
 
 
-HORIZON_LONG = [(W, -1), (W, 1),
-                  (-W, -1), (-W, 1)  ]
-VERTICAL_LONG = [ (-1, H), (1, H),
-                  (-1, -H), (1, -H)]
+HORIZON_LONG = [(W, -0.3), (W, 0.3),
+                  (-W, -0.3), (-W, 0.3)  ]
+VERTICAL_LONG = [ (-0.3, H), (0.3, H),
+                  (-0.3, -H), (0.3, -H)]
 
 HORIZON_SHORT = [(W/3, -0.5), (W/3, 0.5),
                   (-W/3, -0.5), (-W/3, 0.5)  ]
                     # up         # right     # down    # left , left_one_third, right_one_third
-WALL_INFOS = {"pos": [(W /2, H), (W, H/2), (W / 2, 0), (0, H/2)],
+WALL_INFOS = {"pos": [(int(W /2), int(H)), (int(W), int(H/2)), (int(W / 2), 0), (0, int(H/2))],
               "vertices": [HORIZON_LONG, VERTICAL_LONG, HORIZON_LONG, VERTICAL_LONG]
 }
-
-# Initial Position of Drone and Goal which of each chosen randomly among vertical ends.
-DRONE_INIT_POS = [((i + 1) * W / 8, H / 8) for i in range(1, 7)]
-GOAL_POS = [((i + 1) * W / 8, 7 *H / 8) for i in range(1, 7)]
 
 
 def normalize_position(x):
@@ -70,24 +66,35 @@ def denormalize_position(x):
     return y
 
 
+y_positions = [0.2, 0.35, 0.5, 0.7]
+y_positions = [y__ * H for y__ in copy.copy(y_positions)]
+# Initial Position of Drone and Goal which of each chosen randomly among vertical ends.
+DRONE_INIT_POS =[(int(np.random.randint(1, 14)), np.random.choice(y_positions))]
+GOAL_POS = [ (14, 11), (11, 11)]
+
+
+
+
+
 
 VERTICAL = 1
 HORIZONTAL = 0
 
-OBSTACLE_POSITIONS = [
-    [np.array([0.08, 0.2]), np.array([0.6, 0.2]), HORIZONTAL],
-    [np.array([0.08, 0.35]), np.array([0.6, 0.35]), HORIZONTAL],
-    [np.array([0.08, 0.5]), np.array([0.6, 0.5]), HORIZONTAL],
-    [np.array([0.92, 0.25]), np.array([0.85, 0.25]), HORIZONTAL],
-    [np.array([0.92, 0.35]), np.array([0.85, 0.35]), HORIZONTAL],
-    [np.array([0.2, 0.9]), np.array([0.2, 0.65]), VERTICAL],
-    [np.array([0.4, 0.9]), np.array([0.4, 0.65]), VERTICAL],
-    [np.array([0.6, 0.9]), np.array([0.6, 0.65]), VERTICAL],
-    [np.array([0.8, 0.9]), np.array([0.8, 0.75]), VERTICAL],
-]
-
-
+OBSTACLE_POSITIONS = [ [[0.08, 0.25], [0.65, 0.25], HORIZONTAL],
+                      [[0.08, 0.4], [0.65,  0.4], HORIZONTAL],
+                      [[0.08, 0.55], [0.65,  0.55], HORIZONTAL],
+                      [[0.92, 0.25], [0.85, 0.25], HORIZONTAL],
+                      [[0.92, 0.4], [0.85, 0.4], HORIZONTAL],
+                      [[0.2,  0.9],  [0.2, 0.75], VERTICAL],
+                      [[0.4,  0.9],  [0.4, 0.75], VERTICAL],
+                      [[0.6,  0.9],  [0.6 ,0.75], VERTICAL],
+                      [[0.8 , 0.9], [0.8,  0.75], VERTICAL]
+                ]
 OBSTACLE_POSITIONS = [[denormalize_position(x[0]), denormalize_position(x[1]), x[2]] for x in OBSTACLE_POSITIONS]
+for x in OBSTACLE_POSITIONS:
+    if x[2] ==HORIZONTAL:
+        x[0] += 0.3
+        x[0] -= 0.3
 
 
 def rotation_4(z):
@@ -95,6 +102,8 @@ def rotation_4(z):
     y = z[1]
     rot = [[x, y], [-x, y], [-x, -y], [x, -y]]
     return rot
+
+
 
 
 class MovingRange(object):
@@ -184,16 +193,21 @@ class NavigationEnvDefault(gym.Env):
         "goal_position":gym.spaces.Box(np.array([0, 0]), np.array([W, H]), dtype=np.float32),
         "lidar": gym.spaces.Box(low=0, high=1, shape=(16, )),
         "energy": gym.spaces.Box(low=0, high=1, shape=(1, )),
-        "obstacle_speed": gym.spaces.Box(low=0, high=1, shape=(10, ))
+        "obstacle_speed": gym.spaces.Box(low=-1, high=1, shape=(len(OBSTACLE_POSITIONS), )),
+        "obstacle_position": gym.spaces.Box(low=0, high=1, shape=(2 * len(OBSTACLE_POSITIONS), ))
     }
 
     # meta data keys. It is used to force order to get observation.
     # We may use ordered dict, but saving key with list is more economic
     # rather than create ordered dict whenever steps proceed
-    observation_meta_data_keys = ["position", "goal_position", "lidar", "energy", "obstacle_speed"]
+    observation_meta_data_keys = ["position", "goal_position", "lidar", "energy", "obstacle_speed", "obstacle_position"]
 
-    def __init__(self, max_obs_range=3, num_disturb=4, num_obstacle=10, initial_speed=2, tail_latency=5,
+    def __init__(self, max_obs_range=3,  max_speed=5, initial_speed=2, tail_latency=5,
                  latency_accuracy = 0.95, obs_delay=3):
+        self.verbose = False
+        self.scores = None
+        self.episode_counter = 0
+
         self.seed()
         self.viewer = None
         self.world = Box2D.b2World(gravity=(0, 0))
@@ -214,29 +228,30 @@ class NavigationEnvDefault(gym.Env):
         self.achieve_goal = False
         self.strike_by_obstacle = False
         self.tail_latency= tail_latency
-        self.num_disturbs = num_disturb
-        self.num_obstacles = num_obstacle
         self.dynamics = initial_speed
         self.energy = 1
         self.latency_error = (1 - latency_accuracy)
         self.max_delay = obs_delay
-        self.min_speed = 1
-        self.max_speed=  5
+        self.min_speed = 0.5
+        self.max_speed = max_speed
         self.speed_table = None
-        p1 = (1, 1)
-        p2 = (W - 1, 1)
-        self.sky_polys = [[p1, p2, (p2[0], H), (p1[0], H)]]
+        p1 = (0.75, 0.5)
+        p2 = (W - 0.5, 0.5)
+        self.sky_polys = [[p1, p2, (p2[0], H-0.5), (p1[0], H-0.5)]]
+        self.position_intrinsic_reward = None
         self.reset()
+        self.game_over = False
+
+    def verbosing(self):
+        if len(self.scores) == 100:
+            print("last 100 episode score", np.mean(self.scores))
 
     @property
     def observation_space(self):
-        # lidar + current position + goal position + energy + risk
-
         size = 0
         for k in self.observation_meta_data:
             val = self.observation_meta_data[k]
             size += val.shape[0]
-
         return spaces.Box(-np.inf, np.inf, shape=(size, ), dtype=np.float32)
 
     @property
@@ -244,29 +259,44 @@ class NavigationEnvDefault(gym.Env):
         # Action is two floats [vertical speed, horizontal speed].
         return spaces.Box(-1, 1, shape=(2,), dtype=np.float32)
 
-    def seed(self, seed=None):
+    def seed(self, seed=777):
         self.np_random, seed = seeding.np_random(seed)
         return [seed]
+
+    @staticmethod
+    def to_polar(x):
+        r = np.linalg.norm(x)
+        x_pos = x[0]
+        y_pos = x[1]
+        theta = np.arctan(y_pos/x_pos)
+        return np.asarray([r, theta])
 
     def dict_observation(self):
         position = normalize_position(self.drone.position)
         goal_position = normalize_position(self.goal.position)
         lidar = [l.fraction for l in self.lidar]
-        obstacle_speed = [np.linalg.norm(o.linearVelocity)/self.max_speed for o in self.obstacles]
+        obstacle_speed = np.copy(self.speed_table)
+        obstacle_position = [position - normalize_position(o.position) for o in self.obstacles]
         dict_obs = {
             "position":position,
             "goal_position": goal_position,
-            "lidar":lidar,
-            "energy":self.energy,
-            "obstacle_speed": obstacle_speed
+            "lidar": lidar,
+            "energy": self.energy,
+            "obstacle_speed": obstacle_speed,
+            "obstacle_position":obstacle_position
         }
+
         return dict_obs
 
-    def array_observation(self):
-        dict_obs = self.dict_observation()
+    def array_observation(self, dict_obs=None):
+        if dict_obs is None:
+            dict_obs = self.dict_observation()
+
         obs = []
-        for k in self.observation_meta_data_keys:
+
+        for k in dict_obs.keys():
             obs.append(np.asarray(dict_obs[k], dtype=np.float32).flatten())
+
         return np.concatenate(obs)
 
     def _destroy(self):
@@ -295,6 +325,7 @@ class NavigationEnvDefault(gym.Env):
     def _build_wall(self):
         wall_pos =WALL_INFOS["pos"]
         wall_ver = WALL_INFOS["vertices"]
+
         for p, v in zip(wall_pos, wall_ver):
             wall = self.world.CreateStaticBody(
                 position=p,
@@ -313,8 +344,14 @@ class NavigationEnvDefault(gym.Env):
     def _build_obstacles(self):
         for i in range(len(OBSTACLE_POSITIONS)):
             pos = np.random.uniform(low=OBSTACLE_POSITIONS[i][0], high=OBSTACLE_POSITIONS[i][1])
-            vel = OBSTACLE_POSITIONS[i][1] - pos
-
+            vel = np.random.uniform(low=self.min_speed, high=self.max_speed)
+            coin = np.random.randint(low=0, high=2)
+            if coin == 0:
+                vel = vel * (-1)
+            if OBSTACLE_POSITIONS[i][2] == HORIZONTAL:
+                vel = [vel, 0]
+            else:
+                vel = [0, vel]
             obstacle = self.world.CreateDynamicBody(
                 position=(pos[0], pos[1]),
                 angle=0.0,
@@ -329,9 +366,12 @@ class NavigationEnvDefault(gym.Env):
             )
             obstacle.color1 = (0.7, 0.2, 0.2)
             obstacle.color2 = (0.7, 0.2, 0.2)
-            speed = np.random.uniform(low=self.min_speed, high=self.max_speed)
+
+            obstacle.linearVelocity.Set(vel[0], vel[1])
+            speed = np.linalg.norm(obstacle.linearVelocity)
             self.speed_table[i] = speed / self.max_speed
-            obstacle.linearVelocity.Set(speed* vel[0], speed* vel[1])
+            if coin == 0:
+                self.speed_table[i] *= -1
             range_= MovingRange.from_metadata(OBSTACLE_POSITIONS[i])
             setattr(obstacle, "moving_range", range_)
             self.obstacles.append(obstacle)
@@ -353,7 +393,23 @@ class NavigationEnvDefault(gym.Env):
         ranges = np.array(ranges)
         return ranges
 
+    @property
+    def last_score(self):
+        print(len(self.scores))
+        return np.mean(self.scores)
+
     def reset(self):
+        if self.scores is None:
+            self.scores = deque(maxlen=100)
+        else:
+            if self.achieve_goal:
+                self.scores.append(1)
+            else:
+                self.scores.append(0)
+
+        if self.verbose:
+            self.verbosing()
+
         self.game_over = False
         self.prev_shaping = None
         self.achieve_goal = False
@@ -386,21 +442,27 @@ class NavigationEnvDefault(gym.Env):
         self._build_obstacles()
 
         # create controller object
-        drone_pos = DRONE_INIT_POS[np.random.randint(len(DRONE_INIT_POS))]
-        self.drone = self.world.CreateDynamicBody(
-            position=drone_pos,
-            angle=0.0,
-            fixtures=fixtureDef(
-                shape=polygonShape(vertices=[(x / SCALE, y / SCALE) for x, y in DRONE_POLY]),
-                density=5.0,
-                friction=0.1,
-                categoryBits=0x0010,
-                maskBits=0x003,  # collide all but obs range object
-                restitution=0.0)  # 0.99 bouncy
-        )
-
-        self.drone.color1 = (0.5, 0.4, 0.9)
-        self.drone.color2 = (0.3, 0.3, 0.5)
+        while True:
+            drone_pos = (int(np.random.randint(1, 10)), int(np.random.randint(1, 5)))
+            self.drone = self.world.CreateDynamicBody(
+                position=drone_pos,
+                angle=0.0,
+                fixtures=fixtureDef(
+                    shape=polygonShape(vertices=[(x / SCALE, y / SCALE) for x, y in DRONE_POLY]),
+                    density=5.0,
+                    friction=0.1,
+                    categoryBits=0x0010,
+                    maskBits=0x003,  # collide all but obs range object
+                    restitution=0.0)  # 0.99 bouncy
+            )
+            self.drone.color1 = (0.5, 0.4, 0.9)
+            self.drone.color2 = (0.3, 0.3, 0.5)
+            self.world.Step(1.0 / FPS, 6 * 30, 2 * 30)
+            if self.game_over:
+                self.world.DestroyBody(self.drone)
+                self.game_over = False
+            else:
+                break
         # create goal
         goal_pos = GOAL_POS[np.random.randint(len(GOAL_POS))]
         self.goal = self.world.CreateStaticBody(
@@ -432,43 +494,51 @@ class NavigationEnvDefault(gym.Env):
         self.obs_range_plt.color2 = (0.6, 0.6, 0.6)
         self.drawlist = [self.obs_range_plt, self.drone, self.goal] + self.walls + self.obstacles
         self._observe_lidar(drone_pos)
-
+        self.world.Step(1.0 / FPS, 6 * 30, 2 * 30)
         return np.copy(self.array_observation())
 
-    def step(self, action: np.ndarray):
+    def step(self, action: np.iterable):
+        action = np.asarray(action, dtype=np.float64)
+        self.drone.linearVelocity.Set(action[0], action[1])
+        self.world.Step(1.0 / FPS, 6 * 30, 2 * 30)
         for i in range(len(self.obstacles)):
             o = self.obstacles[i]
             moving_range = o.moving_range.out_of_range(o)
             if moving_range != 0:
-                speed = np.random.randint(low=self.min_speed, high=self.max_speed)
+                speed = np.random.uniform(low=self.min_speed, high=self.max_speed)
+                """
+                # speed = self.speed_table[i] * self.max_speed + np.random.normal(loc=0, scale=0.25)
+            
+                if speed >= self.max_speed:
+                    speed = self.max_speed
+                elif speed <= self.min_speed:
+                    speed = self.min_speed
+                """
                 next_velocity = (speed * moving_range) * o.moving_range.move_direction
                 o.linearVelocity.Set(next_velocity[0], next_velocity[1])
-                self.speed_table[i] = speed / self.max_speed
+                self.speed_table[i] = moving_range  * speed / self.max_speed
 
-        pos = np.array(self.drone.position)
-        goal_pos = np.array(self.goal.position)
-        action = np.array(action, dtype=np.float64)
-        self.drone.linearVelocity.Set(action[0], action[1])
-        self.world.Step(1.0 / FPS, 6 * 30, 2 * 30)
         self.energy -= 1e-3
-
+        pos = np.array(self.drone.position)
         self._observe_lidar(pos)
-        reward = 0.0025 - 0.01 * np.linalg.norm(pos - goal_pos)
+        reward = 0
+
         done = self.game_over
         if done:
             if self.achieve_goal:
-                reward = 100
+                reward = 1
 
         if self.energy <= 0:
             done = True
         if done and not self.achieve_goal:
-            reward = -10
+            reward = 0
         info = {
             'success':
                 self.achieve_goal,
             'energy':
             self.energy
         }
+
         return np.copy(self.array_observation()), reward, done, info
 
     def render(self, mode='human'):
@@ -503,6 +573,45 @@ class NavigationEnvDefault(gym.Env):
             self.viewer.close()
             self.viewer = None
 
+    def init_position_set(self, x, y):
+        self.drone.position.Set(x, y)
+
+
+class NavigationEnvLocal(NavigationEnvDefault):
+    observation_meta_data = {
+        "position":gym.spaces.Box(np.array([0, 0]), np.array([W, H]), dtype=np.float32),
+        "goal_position":gym.spaces.Box(np.array([0, 0]), np.array([W, H]), dtype=np.float32),
+        "lidar": gym.spaces.Box(low=0, high=1, shape=(16, )),
+        "energy": gym.spaces.Box(low=0, high=1, shape=(1, ))
+    }
+
+    # meta data keys. It is used to force order to get observation.
+    # We may use ordered dict, but saving key with list is more economic
+    # rather than create ordered dict whenever steps proceed
+    observation_meta_data_keys = ["position", "goal_position", "lidar", "energy"]
+
+    def dict_observation(self):
+        position = normalize_position(self.drone.position)
+        goal_position = normalize_position(self.goal.position)
+        lidar = [l.fraction for l in self.lidar]
+        dict_obs = {
+            "position":position,
+            "goal_position": goal_position,
+            "lidar": lidar,
+            "energy": self.energy
+        }
+
+        return dict_obs
+
+    def array_observation(self, dict_obs=None):
+        if dict_obs is None:
+            dict_obs = self.dict_observation()
+        obs = []
+        for k in NavigationEnvLocal.observation_meta_data_keys:
+            obs.append(np.asarray(dict_obs[k], dtype=np.float32).flatten())
+
+        return np.concatenate(obs)
+
 
 class NavigationEnvWall(NavigationEnvDefault):
     observation_meta_data = {
@@ -513,6 +622,17 @@ class NavigationEnvWall(NavigationEnvDefault):
     }
 
     observation_meta_data_keys = ["position", "goal_position", "lidar", "energy"]
+    a_map = [[25, 0], [-25, 0], [0, 25], [0, -25]]
+
+    subgoals = [denormalize_position([0.75, 0.25]), denormalize_position([0.75, 0.65]), "goal_pos"]
+
+    def __init__(self, *args, **kwargs):
+
+
+        super().__init__(*args, **kwargs)
+        self.subgoal_index = 0
+
+        # self.position_intrinsic_reward = PositionIntrinsicReward()
 
     def _build_obstacles(self):
         for i in range(len(OBSTACLE_POSITIONS)):
@@ -531,6 +651,11 @@ class NavigationEnvWall(NavigationEnvDefault):
             wall.color2 = (1.0, 1.0, 1.0)
             self.obstacles.append(wall)
 
+    def reset(self):
+        super().reset()
+        self.subgoal_index = 0
+        return np.copy(self.array_observation())
+
     def dict_observation(self):
         position = normalize_position(self.drone.position)
         goal_position = normalize_position(self.goal.position)
@@ -543,25 +668,142 @@ class NavigationEnvWall(NavigationEnvDefault):
         }
         return dict_obs
 
-    def step(self, action: np.ndarray):
-        pos = np.array(self.drone.position)
-        goal_pos = np.array(self.goal.position)
-        action = np.array(action, dtype=np.float64)
+    def array_observation(self, dict_obs=None):
+        if dict_obs is None:
+            dict_obs = self.dict_observation()
+        obs = []
+        for k in self.observation_meta_data_keys:
+            obs.append(np.asarray(dict_obs[k], dtype=np.float32).flatten())
+        obs = np.concatenate(obs)
+        return obs
+
+    def reward_vector(self, position):
+
+        position = normalize_position(position)
+        goal_pos = normalize_position(self.goal.position)
+        """
+        x = np.concatenate([position, goal_pos])
+        x = np.expand_dims(x, axis=0)
+        r_vec = self.r_model.predict_on_batch(x)
+        return r_vec
+        """
+        x_pos = position[0]
+        y_pos = position[1]
+        goal_pos = normalize_position(self.goal.position)
+
+        # below
+        if y_pos <= 0.4:
+            if x_pos <= 0.65:
+                return np.asarray([1, 0])
+            elif x_pos > 0.85:
+                return np.asarray([-1, 0])
+            else:
+                return np.asarray([0, 1])
+        # middle
+        elif y_pos < 0.55:
+            if x_pos < 0.65:
+                return np.asarray([1, 0])
+            else:
+                return np.asarray([0, 1])
+        # high
+        elif y_pos < 0.68:
+            x_dir = goal_pos[0] - x_pos
+            if abs(x_dir) < 0.12:
+                direction = goal_pos - position
+                direction = direction / np.linalg.norm(direction) * 10
+                return direction
+            elif x_dir > 0:
+                return np.asarray([1, 0])
+            else:
+                return np.asarray([-1, 0])
+
+        else:
+            if goal_pos[0] <= 0.2:
+                if x_pos <= 0.2:
+                    direction = goal_pos - position
+                    direction = direction / np.linalg.norm(direction) * 10
+                    return direction
+                else:
+                    return np.asarray([0, -1])
+
+            elif 0.2 < goal_pos[0] < 0.4:
+                if 0.2 < x_pos < 0.4:
+                    direction = goal_pos - position
+                    direction = direction / np.linalg.norm(direction) * 10
+                    return direction
+                else:
+                    return np.asarray([0, -1])
+
+            elif 0.4 < goal_pos[0] < 0.6:
+                if 0.4 < x_pos < 0.6:
+                    direction = goal_pos - position
+                    direction = direction / np.linalg.norm(direction) * 10
+                    return direction
+                else:
+                    return np.asarray([0, -1])
+
+            elif 0.6 < goal_pos[0] < 0.8:
+                if 0.6 < x_pos < 0.8:
+                    direction = goal_pos - position
+                    direction = direction / np.linalg.norm(direction) * 10
+                    return direction
+                else:
+                    return np.asarray([0, -1])
+            else:
+                if 0.8 < x_pos :
+                    direction = goal_pos - position
+                    direction = direction / np.linalg.norm(direction) * 10
+                    return direction
+                else:
+                    return np.asarray([0, -1])
+
+    @staticmethod
+    def achieve_subgoal(pos, subgoal_pos):
+        if np.linalg.norm(pos - subgoal_pos) < 0.5:
+            return True
+        else:
+            return False
+
+    def lidar_info(self, pos):
+        self._observe_lidar(pos)
+        return [l.fraction for l in self.lidar]
+
+    @property
+    def current_subgoals(self):
+        return [self.subgoals[0], self.subgoals[1], np.asarray(self.goal.position)]
+
+    def step(self, action):
+        action = np.asarray(action, dtype=np.float64)
+        # reward_vector = self.reward_vector(pos)
+        # reward = np.inner(reward_vector, action)
+        # action = np.asarray(action, dtype=np.float64)
         self.drone.linearVelocity.Set(action[0], action[1])
         self.world.Step(1.0 / FPS, 6 * 30, 2 * 30)
+        self._observe_lidar(self.drone.position)
+        """
+        subgoals = self.current_subgoals
+        subgoal_pos = subgoals[self.subgoal_index]
+        current_pos = self.drone.position
+
+        reward = 0.25 - 0.25 * np.linalg.norm(subgoal_pos - current_pos)
+        if self.achieve_subgoal(current_pos, subgoal_pos):
+            reward = 50
+            if self.subgoal_index < 2:
+                self.subgoal_index += 1
+                self.subgoal_pos = subgoals[self.subgoal_index]
+        """
+        reward = 0
         self.energy -= 1e-3
-
-        self._observe_lidar(pos)
-        reward = 0.0025 - 0.01 * np.linalg.norm(pos - goal_pos)
         done = self.game_over
-        if done:
-            if self.achieve_goal:
-                reward = 100
-
         if self.energy <= 0:
             done = True
-        if done and not self.achieve_goal:
-            reward = -10
+
+        if done and self.achieve_goal:
+            reward = 1
+            # print("achieved goal")
+        elif done and not self.achieve_goal:
+            reward = -1000
+
         info = {
             'success':
                 self.achieve_goal,
@@ -569,3 +811,231 @@ class NavigationEnvWall(NavigationEnvDefault):
             self.energy
         }
         return np.copy(self.array_observation()), reward, done, info
+
+    def pos_step(self, pos):
+        self.drone.position.Set(pos[0], pos[1])
+        self.world.Step(1.0 / FPS, 6 * 30, 2 * 30)
+        self.energy -= 1e-3
+        self._observe_lidar(pos)
+        return np.copy(self.array_observation())
+
+
+class NavigationEnvMeta(gym.Env, gym.utils.EzPickle):
+    observation_meta_data = copy.copy(NavigationEnvDefault.observation_meta_data)
+    observation_meta_data["network_state"] = gym.spaces.Box(low=0, high=1, shape=(1, ))
+    observation_meta_data_keys = copy.copy(NavigationEnvDefault.observation_meta_data_keys)
+    observation_meta_data_keys.append("network_state")
+
+    delay_meta_data = {
+        "exponential": lambda avg: np.random.exponential(scale=avg),
+        "normal": lambda avg: np.random.normal(loc=avg, scale=1),
+        "lognormal":lambda avg, sigma: np.random.lognormal(avg, sigma)
+    }
+
+    def __init__(self, subpolicies, network_accuracy=0.9, average_delay=10, global_data_decay=0, delay_function=None,
+                 correction_model=None, delay_kwargs=None,
+                 *args, **kwargs):
+        super(EzPickle, self).__init__()
+        self.wrapped_env = NavigationEnvDefault(*args, **kwargs)
+        self.aux_env = NavigationEnvWall(*args, **kwargs)
+        self.subpolicies = subpolicies
+        from stable_baselines import PPO2
+        for i in range(len(self.subpolicies)):
+            if type(self.subpolicies[i]) is str:
+
+                self.subpolicies[i] = PPO2.load(self.subpolicies[i])
+
+        self.network_accuracy = network_accuracy
+        self.average_delay = average_delay
+        self.global_data_decay = global_data_decay
+        self.correction_model = correction_model
+        self.delay = 0
+        self.observation_stack = None
+        self.current_subpolicy = 0
+        self.action_histogram = None
+
+        self.delay_function = delay_function(**delay_kwargs)
+    @property
+    def action_space(self):
+        return gym.spaces.Discrete(n=len(self.subpolicies))
+
+    @property
+    def achieve_goal(self):
+        return self.wrapped_env.achieve_goal
+
+    @property
+    def last_score(self):
+        return self.wrapped_env.last_score
+
+    def reset(self):
+
+        self.wrapped_env.reset()
+        self.aux_env.reset()
+        drone_pos = self.wrapped_env.drone.position
+        self.aux_env.init_position_set(drone_pos[0], drone_pos[1])
+        self.network_state()
+        self.action_histogram = [0, 0]
+        return self.array_observation()
+
+    def render(self):
+        if self.current_subpolicy == 0:
+            self.wrapped_env.goal.color1 = [0., 0.5, 0.5 ]
+            self.wrapped_env.goal.color2 = [0., 0.5, 0.5 ]
+        else:
+            self.wrapped_env.goal.color1 = [0.5, 0., 0. ]
+            self.wrapped_env.goal.color2 = [0.5, 0., 0. ]
+        return self.wrapped_env.render()
+
+    @property
+    def observation_space(self):
+        size = 0
+        for k in self.observation_meta_data_keys:
+            shape = self.observation_meta_data[k].shape[0]
+            size += shape
+        return gym.spaces.Box(low=-np.inf, high=np.inf, shape=(size, ))
+
+    def network_state(self):
+        self.delay = self.delay_function()
+        if self.delay <= 1:
+            self.delay = 1
+        return self.delay
+
+    def dict_observation(self):
+        dict_obs = self.wrapped_env.dict_observation()
+        net_stat = self.delay
+        net_stat *= 0.1
+        dict_obs["network_state"] = net_stat
+        return dict_obs
+
+    def array_observation(self):
+        obs = []
+        dict_obs = self.dict_observation()
+        for k in self.observation_meta_data_keys:
+            obs.append(np.asarray(dict_obs[k], dtype=np.float32).flatten())
+        return np.concatenate(obs)
+
+    @staticmethod
+    def net_state_to_delay(network_state):
+        network_state = int(round(network_state))
+        return network_state
+
+    def step(self, action):
+        steps = self.net_state_to_delay(self.delay)
+        subpolicy = self.subpolicies[action]
+        self.current_subpolicy = action
+        self.action_histogram[action] += 1
+        # dodge moving subpolicy
+        # obs_queue = deque(maxlen=self.max_delay)
+        if action == 0:
+            first_obs = self.wrapped_env.dict_observation()
+            speed_info = first_obs["obstacle_speed"]
+            position_info = first_obs["obstacle_position"]
+            current_obs = self.wrapped_env.array_observation()
+
+            for _ in range(steps):
+                action, _ =  subpolicy.predict(current_obs)
+                _ , reward, done, info = self.wrapped_env.step(action)
+                dict_obs = self.wrapped_env.dict_observation()
+                dict_obs["obstacle_speed"] = speed_info
+                dict_obs["obstacle_position"] = position_info
+                current_obs = self.wrapped_env.array_observation(dict_obs)
+                if done:
+                    break
+        else:
+            dict_obs = self.wrapped_env.dict_observation()
+            del dict_obs["obstacle_speed"]
+            del dict_obs["obstacle_position"]
+            current_obs = self.wrapped_env.array_observation(dict_obs)
+
+            for _ in range(steps):
+                action, _ =  subpolicy.predict(current_obs)
+                _ , reward, done, info = self.wrapped_env.step(action)
+                dict_obs = self.wrapped_env.dict_observation()
+                del dict_obs["obstacle_speed"]
+                del dict_obs["obstacle_position"]
+                current_obs = self.wrapped_env.array_observation(dict_obs)
+                if done:
+                    break
+        net_state = self.network_state()
+        obs = self.array_observation()
+        done = self.wrapped_env.game_over
+        reward = 0
+        if self.wrapped_env.energy <= 0:
+            done = True
+
+        if done and self.wrapped_env.achieve_goal:
+            reward = 1
+
+        return np.copy(obs), reward, done, {}
+
+
+class NavigationEnvNetTest(NavigationEnvMeta):
+    def step(self, action):
+        steps = self.net_state_to_delay(self.delay)
+        subpolicy = self.subpolicies[action]
+        self.current_subpolicy = action
+        self.action_histogram[action] += 1
+        # dodge moving subpolicy
+        # obs_queue = deque(maxlen=self.max_delay)
+        if action == 0:
+            wrapped_env_pos = self.wrapped_env.drone.position
+            lidar = self.aux_env.lidar_info(pos=wrapped_env_pos)
+            dict_obs = self.wrapped_env.dict_observation()
+            dict_obs["lidar"] = np.asarray(lidar, dtype=np.float32)
+            position_info = dict_obs["position"]
+            del dict_obs["obstacle_speed"]
+            current_obs = self.aux_env.array_observation(dict_obs)
+            for _ in range(steps):
+                action, _ = subpolicy.predict(current_obs)
+                _, reward, done, info = self.wrapped_env.step(action)
+                if done:
+                     break
+                wrapped_env_pos = self.wrapped_env.drone.position
+                lidar = self.aux_env.lidar_info(pos=wrapped_env_pos)
+                dict_obs = self.wrapped_env.dict_observation()
+                dict_obs["lidar"] = np.asarray(lidar, dtype=np.float32)
+                dict_obs["position"] = position_info
+                current_obs = self.aux_env.array_observation(dict_obs)
+
+        net_state = self.network_state()
+        obs = self.array_observation()
+        done = self.wrapped_env.game_over
+        reward = 0
+        if self.wrapped_env.energy <= 0:
+            done = True
+
+        if done and self.wrapped_env.achieve_goal:
+            reward = 1
+
+        return np.copy(obs), reward, done, {}
+
+
+class NavigationEnvMetaNoNet(NavigationEnvMeta):
+    observation_meta_data = copy.copy(NavigationEnvDefault.observation_meta_data)
+    observation_meta_data_keys = copy.copy(NavigationEnvDefault.observation_meta_data_keys)
+
+    def dict_observation(self):
+        dict_obs = self.wrapped_env.dict_observation()
+        return dict_obs
+
+
+
+if __name__ == "__main__":
+    env = NavigationEnvWall()
+    while True:
+        done = False
+        obs =env.reset()
+        while not done:
+            env.render()
+
+            pos = normalize_position(env.drone.position)
+            goal_pos = env.goal.position
+
+            print("x_pos", pos[0], "y_pos", pos[1])
+            print("goal x_pos", goal_pos[0], "goal y_pos",goal_pos[1])
+            action = input("right, left, up, down")
+            action = int(action)
+            action = NavigationEnvWall.a_map[action]
+            obs, reward, done, info = env.step(action)
+            print("reward", reward)
+
