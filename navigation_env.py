@@ -176,7 +176,7 @@ class ContactDetector(contactListener):
                 self.env.achieve_goal = True
 
 
-class NavigationEnvDefault(gym.Env):
+class NavigationEnvDefault(gym.Env, EzPickle):
     metadata = {
         'render.modes': ['human', 'rgb_array'],
         'video.frames_per_second': FPS
@@ -204,6 +204,7 @@ class NavigationEnvDefault(gym.Env):
 
     def __init__(self, max_obs_range=3,  max_speed=5, initial_speed=2, tail_latency=5,
                  latency_accuracy = 0.95, obs_delay=3):
+        super(EzPickle, self).__init__()
         self.verbose = False
         self.scores = None
         self.episode_counter = 0
@@ -400,7 +401,7 @@ class NavigationEnvDefault(gym.Env):
 
     def reset(self):
         if self.scores is None:
-            self.scores = deque(maxlen=100)
+            self.scores = deque(maxlen=1000)
         else:
             if self.achieve_goal:
                 self.scores.append(1)
@@ -825,7 +826,9 @@ class NavigationEnvMeta(gym.Env, gym.utils.EzPickle):
     observation_meta_data["network_state"] = gym.spaces.Box(low=0, high=1, shape=(1, ))
     observation_meta_data_keys = copy.copy(NavigationEnvDefault.observation_meta_data_keys)
     observation_meta_data_keys.append("network_state")
-
+    local_observation_keys = ["position", "goal_position", "lidar", "energy"]
+    global_observation_keys = ["obstacle_speed", "obstacle_position", "network_state"]
+    device_global_observation_keys = ["obstacle_speed", "obstacle_position"]
     delay_meta_data = {
         "exponential": lambda avg: np.random.exponential(scale=avg),
         "normal": lambda avg: np.random.normal(loc=avg, scale=1),
@@ -853,8 +856,11 @@ class NavigationEnvMeta(gym.Env, gym.utils.EzPickle):
         self.observation_stack = None
         self.current_subpolicy = 0
         self.action_histogram = None
-
         self.delay_function = delay_function(**delay_kwargs)
+        self.step_cnt = 0
+        self.stale_global_obs = None
+        self.stale_local_obs = None
+
     @property
     def action_space(self):
         return gym.spaces.Discrete(n=len(self.subpolicies))
@@ -867,15 +873,43 @@ class NavigationEnvMeta(gym.Env, gym.utils.EzPickle):
     def last_score(self):
         return self.wrapped_env.last_score
 
-    def reset(self):
+    @staticmethod
+    def array_observation(dict_obs: dict, obs_key: list):
+        obs = []
+        for k in obs_key:
+            obs.append(np.asarray(dict_obs[k], dtype=np.float32).flatten())
+        obs = np.concatenate(obs)
+        return obs
 
+    @property
+    def server_observation(self):
+        fresh_obs = self.wrapped_env.dict_observation()
+        fresh_obs["network_state"] = [self.delay - 0.1 * self.step_cnt]
+        return np.concatenate([self.stale_local_obs, self.array_observation(fresh_obs, self.global_observation_keys)])
+
+    @property
+    def local_only_device_observation(self):
+        fresh_obs = self.wrapped_env.dict_observation()
+        return self.array_observation(fresh_obs, self.local_observation_keys)
+
+    @property
+    def full_global_device_observation(self):
+        fresh_obs = self.wrapped_env.dict_observation()
+        local_obs = self.array_observation(fresh_obs, self.local_observation_keys)
+        return np.concatenate((local_obs, self.stale_global_obs))
+
+    def reset(self):
         self.wrapped_env.reset()
-        self.aux_env.reset()
-        drone_pos = self.wrapped_env.drone.position
-        self.aux_env.init_position_set(drone_pos[0], drone_pos[1])
         self.network_state()
+        fresh_obs = self.wrapped_env.dict_observation()
+        fresh_obs["network_state"] = self.delay
+        local_obs = self.array_observation(fresh_obs, self.local_observation_keys)
+        self.stale_global_obs = np.copy(self.array_observation(fresh_obs, self.device_global_observation_keys))
+        self.stale_local_obs = np.copy(local_obs)
         self.action_histogram = [0, 0]
-        return self.array_observation()
+        self.step_cnt = 0
+        obs = self.server_observation
+        return obs
 
     def render(self):
         if self.current_subpolicy == 0:
@@ -907,13 +941,6 @@ class NavigationEnvMeta(gym.Env, gym.utils.EzPickle):
         dict_obs["network_state"] = net_stat
         return dict_obs
 
-    def array_observation(self):
-        obs = []
-        dict_obs = self.dict_observation()
-        for k in self.observation_meta_data_keys:
-            obs.append(np.asarray(dict_obs[k], dtype=np.float32).flatten())
-        return np.concatenate(obs)
-
     @staticmethod
     def net_state_to_delay(network_state):
         network_state = int(round(network_state))
@@ -921,52 +948,87 @@ class NavigationEnvMeta(gym.Env, gym.utils.EzPickle):
 
     def step(self, action):
         steps = self.net_state_to_delay(self.delay)
+        self.step_cnt += 1
         subpolicy = self.subpolicies[action]
         self.current_subpolicy = action
         self.action_histogram[action] += 1
-        # dodge moving subpolicy
-        # obs_queue = deque(maxlen=self.max_delay)
-        if action == 0:
-            first_obs = self.wrapped_env.dict_observation()
-            speed_info = first_obs["obstacle_speed"]
-            position_info = first_obs["obstacle_position"]
-            current_obs = self.wrapped_env.array_observation()
 
-            for _ in range(steps):
-                action, _ =  subpolicy.predict(current_obs)
-                _ , reward, done, info = self.wrapped_env.step(action)
-                dict_obs = self.wrapped_env.dict_observation()
-                dict_obs["obstacle_speed"] = speed_info
-                dict_obs["obstacle_position"] = position_info
-                current_obs = self.wrapped_env.array_observation(dict_obs)
-                if done:
-                    break
-        else:
-            dict_obs = self.wrapped_env.dict_observation()
-            del dict_obs["obstacle_speed"]
-            del dict_obs["obstacle_position"]
-            current_obs = self.wrapped_env.array_observation(dict_obs)
+        # delay is over update
+        if self.step_cnt >= steps:
+            last_obs = self.wrapped_env.dict_observation()
+            local_obs = self.array_observation(last_obs, self.local_observation_keys)
+            global_obs = self.array_observation(last_obs, self.device_global_observation_keys)
 
-            for _ in range(steps):
-                action, _ =  subpolicy.predict(current_obs)
-                _ , reward, done, info = self.wrapped_env.step(action)
-                dict_obs = self.wrapped_env.dict_observation()
-                del dict_obs["obstacle_speed"]
-                del dict_obs["obstacle_position"]
-                current_obs = self.wrapped_env.array_observation(dict_obs)
-                if done:
-                    break
-        net_state = self.network_state()
-        obs = self.array_observation()
-        done = self.wrapped_env.game_over
+            self.network_state()
+            self.stale_global_obs = np.copy(global_obs)
+            self.stale_local_obs = np.copy(local_obs)
+            self.step_cnt = 0
+
         reward = 0
+        if action == 0:
+            device_obs = self.full_global_device_observation
+            action, _ = subpolicy.predict(device_obs)
+            _, __, done, info = self.wrapped_env.step(action)
+
+        elif action == 1:
+            device_obs = self.local_only_device_observation
+            action, _ = subpolicy.predict(device_obs)
+            _, __, done, info = self.wrapped_env.step(action)\
+
+        else:
+            raise ValueError
+
         if self.wrapped_env.energy <= 0:
             done = True
 
         if done and self.wrapped_env.achieve_goal:
             reward = 1
+        elif done and not self.wrapped_env.achieve_goal:
+            reward = -1
+        obs = self.server_observation
+        return obs, reward, done, {}
 
-        return np.copy(obs), reward, done, {}
+    def timer_heuristic(self, episodes=1000, thresh_hold=6):
+        scores = []
+        for _ in range(episodes):
+            self.reset()
+            done = False
+            reward = 0
+            while not done:
+                steps = self.net_state_to_delay(self.delay)
+                subpolicy = self.subpolicies[0]
+                global_steps = min(thresh_hold, steps)
+                local_steps = max(0, steps-global_steps)
+                first_obs = self.wrapped_env.dict_observation()
+                speed_info = first_obs["obstacle_speed"]
+                position_info = first_obs["obstacle_position"]
+                current_obs = self.wrapped_env.array_observation()
+                for _ in range(global_steps):
+                    action, _ = subpolicy.predict(current_obs)
+                    _, reward, done, info = self.wrapped_env.step(action)
+                    dict_obs = self.wrapped_env.dict_observation()
+                    dict_obs["obstacle_speed"] = speed_info
+                    dict_obs["obstacle_position"] = position_info
+                    current_obs = self.wrapped_env.array_observation(dict_obs)
+                    if done:
+                        break
+                if local_steps > 0:
+                    subpolicy = self.subpolicies[1]
+                    for _ in range(local_steps):
+                        dict_obs = self.wrapped_env.dict_observation()
+                        current_obs = self.wrapped_env.array_observation(dict_obs)
+                        del dict_obs["obstacle_speed"]
+                        del dict_obs["obstacle_position"]
+                        action, _ = subpolicy.predict(current_obs)
+                        _, reward, done, info = self.wrapped_env.step(action)
+                        if done:
+                            break
+                self.network_state()
+            if reward > 0:
+                scores.append(1)
+            else:
+                scores.append(0)
+        return np.mean(scores), episodes
 
 
 class NavigationEnvNetTest(NavigationEnvMeta):
@@ -1017,25 +1079,4 @@ class NavigationEnvMetaNoNet(NavigationEnvMeta):
     def dict_observation(self):
         dict_obs = self.wrapped_env.dict_observation()
         return dict_obs
-
-
-
-if __name__ == "__main__":
-    env = NavigationEnvWall()
-    while True:
-        done = False
-        obs =env.reset()
-        while not done:
-            env.render()
-
-            pos = normalize_position(env.drone.position)
-            goal_pos = env.goal.position
-
-            print("x_pos", pos[0], "y_pos", pos[1])
-            print("goal x_pos", goal_pos[0], "goal y_pos",goal_pos[1])
-            action = input("right, left, up, down")
-            action = int(action)
-            action = NavigationEnvWall.a_map[action]
-            obs, reward, done, info = env.step(action)
-            print("reward", reward)
 

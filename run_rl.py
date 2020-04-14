@@ -8,14 +8,13 @@ from stable_baselines.common.vec_env import DummyVecEnv, SubprocVecEnv
 from stable_baselines.ddpg.noise import OrnsteinUhlenbeckActionNoise
 from stable_baselines.common.callbacks import EvalCallback
 
-from navigation_env import NavigationEnvDefault, NavigationEnvWall
+from navigation_env import NavigationEnvDefault, NavigationEnvWall, NavigationEnvMeta
 from stable_baselines.gail import ExpertDataset, generate_expert_traj
 import os
 import tensorflow as tf
 import numpy as np
-from eval_model import *
 from multiprocessing import *
-
+from delays import *
 
 
 def modify_action(exp_dataset):
@@ -36,31 +35,34 @@ config = {
 
 
 if __name__ == "__main__":
-    #os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+    os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 
     results = []
 
     config["max_speed"] = 5
     config["max_obs_range"] = 3
-    n_cpu = 32
+    config["delay_function"] = TruncatedLogNormalDelay
+    for s in [2, 4, 6, 8, 10, 16]:
+        config["delay_kwargs"] = {"mean": 2, "skewness":s, "sigma":None}
+        n_cpu = 32
 
-    model = PPO2.load("./obs_range/ppo2_default_{}.zip".format(config["max_obs_range"])) # icies=["logs/best_model.zip"], **config) for _ in range(n_cpu)])
-    subpolicies = ["obs_range/ppo2_default_{}".format(config["max_obs_range"])]
-    env = SubprocVecEnv([lambda: NavigationEnvDefault( **config) for _ in range(n_cpu)])
-    # model = PPO2(policy="MlpPolicy", env=env)
-    scores = [ ]
-    obs = env.reset()
+        # model = PPO2.load("./obs_range/ppo2_default_{}.zip".format(config["max_obs_range"])) # icies=["logs/best_model.zip"], **config) for _ in range(n_cpu)])
+        subpolicies = ["obs_range/ppo2_default_{}.zip".format(3)]
+        env = SubprocVecEnv([lambda: NavigationEnvMeta( subpolicies= subpolicies, **config) for _ in range(n_cpu)])
+        model = PPO2(policy="MlpPolicy", env=env)
+        scores = [ ]
+        obs = env.reset()
 
-    for j in range(10000):
-        actions, _ = model.predict(obs)
-        obs, reward, done, info = env.step(actions)
-        if j % 100 == 0:
-            print(j, "/", 10000)
-    for i in range(n_cpu):
-        scores = scores + env.get_attr("last_score", i)
-    with open("./obs_range/scores.csv", "a") as f:
-        f.writelines("local" + "," + str(np.mean(scores)) + "\n")
+        for j in range(30000):
+            actions, _ = model.predict(obs)
+            obs, reward, done, info = env.step(actions)
+            if j % 100 == 0:
+                print(j, "/", 30000)
+        for i in range(n_cpu):
+            scores = scores + env.get_attr("last_score", i)
+        with open("./skewness/scores.csv", "a") as f:
+            f.writelines("local" + "," + str(np.mean(scores)) + "\n")
 
-    env.close()
-    del env
+        env.close()
+        del env
 

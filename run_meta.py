@@ -6,6 +6,23 @@ import numpy as np
 import os
 from stable_baselines.common.callbacks import EvalCallback
 from delays import TruncatedLogNormalDelay
+from heuristic import NetworkHeuristic
+
+
+save_config = {
+    "directory": "mean",
+    "meta_policy_name":"ACKTR_MetaPolicy_{}",
+    "Heuristic_Name":"Heuristic_{}"
+}
+
+
+def meta_save_name(config_value):
+    return save_config["directory"] + "/" + save_config["meta_policy_name"].format(config_value)
+
+
+def log_save_name():
+    return save_config["directory"] + "/"+ "scores.csv"
+
 
 if __name__ == "__main__":
     # subpolicies = PPO2.load("test.zip")
@@ -16,23 +33,32 @@ if __name__ == "__main__":
 
     for s in [2, 4, 6, 8, 10]:
 
-        config["average_delay"] = 10
         config["max_speed"] = 5
         config["delay_function"] = TruncatedLogNormalDelay
-        config["delay_kwargs"] = {"mean":10, "sigma":s}
+        config["delay_kwargs"] = {"mean": s, "sigma": 4}
+
+        save_name = meta_save_name(config_value=config["delay_kwargs"]["mean"])
+
         env = [lambda: NavigationEnvMeta(subpolicies=subpolicies, **config) for _ in range(8)]
         env = SubprocVecEnv(env)
+       
         eval_env = NavigationEnvMeta(subpolicies=subpolicies, **config)
         eval_callback = EvalCallback(eval_env=eval_env, eval_freq=10000, deterministic=False, n_eval_episodes=20)
 
         meta_policy = ACKTR(policy="MlpPolicy", env=env, verbose=1, tensorboard_log='logs')
         meta_policy.learn(5000000, log_interval=3, callback=eval_callback)
-        meta_policy.save("DelayDistribution/ACKTR_MetaPolicy_{}".format(config["delay_kwargs"]["sigma"]))
+
+        try:
+            meta_policy.save(save_name)
+        except FileNotFoundError:
+            os.mkdir(save_config["directory"])
+            meta_policy.save(save_name)
+
+        del meta_policy
         env.close()
         del env
-        del meta_policy
 
-        meta_policy = ACKTR.load("DelayDistribution/ACKTR_MetaPolicy_{}".format(config["delay_kwargs"]["sigma"]))
+        meta_policy = ACKTR.load(save_name)
         env = NavigationEnvMeta(subpolicies=subpolicies, **config)
         history = []
         scores = []
@@ -54,10 +80,11 @@ if __name__ == "__main__":
                         scores.append(1)
                     else:
                         scores.append(0)
-            print(i ,"/", 1000)
-        print("scores", np.mean(scores))
-        with open("./obs_range/scores.csv", "a") as f:
-            f.writelines("meta_{}".format(config["average_delay"]) + "," + str(np.mean(scores)) + "\n")
+            print(i ,"/", 100)
+            print("scores", np.mean(scores))
+
+        with open(log_save_name(), "a") as f:
+            f.writelines("meta_{}".format(config["delay_kwargs"]["mean"]) + "," + str(np.mean(scores)) + "\n")
 
         with open("histogram_net_action", "wb") as f:
             pickle.dump(history, f)
