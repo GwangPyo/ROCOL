@@ -6,15 +6,10 @@ import numpy as np
 import os
 from stable_baselines.common.callbacks import EvalCallback
 from delays import TruncatedLogNormalDelay
+from default_config import config, save_config
 from heuristic import NetworkHeuristic
-
-
-save_config = {
-    "directory": "mean",
-    "meta_policy_name":"ACKTR_MetaPolicy_{}",
-    "Heuristic_Name":"Heuristic_{}"
-}
-
+import tensorflow as tf
+import warnings
 
 def meta_save_name(config_value):
     return save_config["directory"] + "/" + save_config["meta_policy_name"].format(config_value)
@@ -26,27 +21,18 @@ def log_save_name():
 
 if __name__ == "__main__":
     # subpolicies = PPO2.load("test.zip")
-
+    warnings.filterwarnings("ignore")
     os.environ["CUDA_VISIBLE_DEVICES"] ="-1"
-    subpolicies = ["obs_range/ppo2_default_{}.zip".format(3), "obs_range/ppo_local.zip"]
-    config = {}
-
-    for s in [2, 4, 6, 8, 10]:
-
-        config["max_speed"] = 5
-        config["delay_function"] = TruncatedLogNormalDelay
-        config["delay_kwargs"] = {"mean": s, "sigma": 4}
-
-        save_name = meta_save_name(config_value=config["delay_kwargs"]["mean"])
-
-        env = [lambda: NavigationEnvMeta(subpolicies=subpolicies, **config) for _ in range(8)]
-        env = SubprocVecEnv(env)
-       
+    subpolicies = [ "obs_range/ppo_local.zip"]
+    save_name = meta_save_name(config_value=save_config["experiment_key"])
+    for s in [2]:
+        print(config)
+        env = SubprocVecEnv([lambda: NavigationEnvMeta(subpolicies=subpolicies, **config) for _ in range(8)])
         eval_env = NavigationEnvMeta(subpolicies=subpolicies, **config)
-        eval_callback = EvalCallback(eval_env=eval_env, eval_freq=10000, deterministic=False, n_eval_episodes=20)
-
-        meta_policy = ACKTR(policy="MlpPolicy", env=env, verbose=1, tensorboard_log='logs')
-        meta_policy.learn(5000000, log_interval=3, callback=eval_callback)
+        eval_callback = EvalCallback(eval_env=eval_env, eval_freq=100000, deterministic=False, n_eval_episodes=200)
+        meta_policy = ACKTR(policy="MlpPolicy", env=env, verbose=1, gamma=0.999, ent_coef=1e-4,
+                            policy_kwargs={'act_fun':tf.nn.elu}, lr_schedule='middle_drop')
+        meta_policy.learn(5000000, log_interval=5, callback=eval_callback)
 
         try:
             meta_policy.save(save_name)
@@ -55,7 +41,6 @@ if __name__ == "__main__":
             meta_policy.save(save_name)
 
         del meta_policy
-        env.close()
         del env
 
         meta_policy = ACKTR.load(save_name)
@@ -84,9 +69,10 @@ if __name__ == "__main__":
             print("scores", np.mean(scores))
 
         with open(log_save_name(), "a") as f:
-            f.writelines("meta_{}".format(config["delay_kwargs"]["mean"]) + "," + str(np.mean(scores)) + "\n")
+            f.writelines("meta_{}".format(save_config["experiment_key"]) + "," + str(np.mean(scores)) + "\n")
 
         with open("histogram_net_action", "wb") as f:
             pickle.dump(history, f)
         env.close()
+        print(config)
         del env

@@ -23,7 +23,7 @@ class TruncatedExponentialDelay(NetworkDelay):
 
 
 class TruncatedLogNormalDelay(NetworkDelay):
-    def __init__(self, mean=10, sigma=None, skewness=None):
+    def __init__(self, mean=10, sigma=4, skewness=None):
         super().__init__()
         if skewness is not None and sigma is not None:
             raise AttributeError("sigma and skewness cannot given at the same time")
@@ -59,7 +59,7 @@ class ConstDelay(NetworkDelay):
 if __name__ == "__main__":
     from matplotlib import pyplot as plt
     lists = []
-    delay = TruncatedLogNormalDelay(mean=2, sigma=16)
+    delay = TruncatedLogNormalDelay(mean=2, sigma=2)
 
     while len(lists) < 1000000:
         lists.append(delay())

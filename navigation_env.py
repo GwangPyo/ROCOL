@@ -260,7 +260,7 @@ class NavigationEnvDefault(gym.Env, EzPickle):
         # Action is two floats [vertical speed, horizontal speed].
         return spaces.Box(-1, 1, shape=(2,), dtype=np.float32)
 
-    def seed(self, seed=777):
+    def seed(self, seed=7777):
         self.np_random, seed = seeding.np_random(seed)
         return [seed]
 
@@ -401,7 +401,7 @@ class NavigationEnvDefault(gym.Env, EzPickle):
 
     def reset(self):
         if self.scores is None:
-            self.scores = deque(maxlen=1000)
+            self.scores = deque(maxlen=10000)
         else:
             if self.achieve_goal:
                 self.scores.append(1)
@@ -823,11 +823,13 @@ class NavigationEnvWall(NavigationEnvDefault):
 
 class NavigationEnvMeta(gym.Env, gym.utils.EzPickle):
     observation_meta_data = copy.copy(NavigationEnvDefault.observation_meta_data)
+    observation_meta_data["staleness"] = gym.spaces.Box(low=0, high=1, shape=(1, ))
     observation_meta_data["network_state"] = gym.spaces.Box(low=0, high=1, shape=(1, ))
     observation_meta_data_keys = copy.copy(NavigationEnvDefault.observation_meta_data_keys)
     observation_meta_data_keys.append("network_state")
     local_observation_keys = ["position", "goal_position", "lidar", "energy"]
-    global_observation_keys = ["obstacle_speed", "obstacle_position", "network_state"]
+    global_observation_keys = ["position", "obstacle_speed", "obstacle_position",  "obstacle_speed",
+                               "obstacle_position", "staleness", "network_state"]
     device_global_observation_keys = ["obstacle_speed", "obstacle_position"]
     delay_meta_data = {
         "exponential": lambda avg: np.random.exponential(scale=avg),
@@ -884,30 +886,34 @@ class NavigationEnvMeta(gym.Env, gym.utils.EzPickle):
     @property
     def server_observation(self):
         fresh_obs = self.wrapped_env.dict_observation()
-        fresh_obs["network_state"] = [self.delay - 0.1 * self.step_cnt]
-        return np.concatenate([self.stale_local_obs, self.array_observation(fresh_obs, self.global_observation_keys)])
+        global_obs = self.array_observation(fresh_obs, self.device_global_observation_keys)
+        delta = global_obs - self.stale_global_obs
+        network_state = [self.step_cnt/self.delay, self.delay]
+        return np.copy(np.concatenate([fresh_obs["position"],  global_obs, delta, np.asarray(network_state)]))
 
     @property
     def local_only_device_observation(self):
         fresh_obs = self.wrapped_env.dict_observation()
-        return self.array_observation(fresh_obs, self.local_observation_keys)
+        return np.copy(self.array_observation(fresh_obs, self.local_observation_keys))
 
     @property
     def full_global_device_observation(self):
         fresh_obs = self.wrapped_env.dict_observation()
         local_obs = self.array_observation(fresh_obs, self.local_observation_keys)
-        return np.concatenate((local_obs, self.stale_global_obs))
+        return np.copy(np.concatenate((local_obs, self.stale_global_obs)))
 
     def reset(self):
         self.wrapped_env.reset()
         self.network_state()
+        self.step_cnt = 0
         fresh_obs = self.wrapped_env.dict_observation()
         fresh_obs["network_state"] = self.delay
+        fresh_obs["staleness"] = self.step_cnt / self.delay
         local_obs = self.array_observation(fresh_obs, self.local_observation_keys)
         self.stale_global_obs = np.copy(self.array_observation(fresh_obs, self.device_global_observation_keys))
         self.stale_local_obs = np.copy(local_obs)
         self.action_histogram = [0, 0]
-        self.step_cnt = 0
+
         obs = self.server_observation
         return obs
 
@@ -923,7 +929,7 @@ class NavigationEnvMeta(gym.Env, gym.utils.EzPickle):
     @property
     def observation_space(self):
         size = 0
-        for k in self.observation_meta_data_keys:
+        for k in self.global_observation_keys:
             shape = self.observation_meta_data[k].shape[0]
             size += shape
         return gym.spaces.Box(low=-np.inf, high=np.inf, shape=(size, ))
@@ -952,6 +958,19 @@ class NavigationEnvMeta(gym.Env, gym.utils.EzPickle):
         subpolicy = self.subpolicies[action]
         self.current_subpolicy = action
         self.action_histogram[action] += 1
+        reward = 0
+        if action == 0:
+            device_obs = self.full_global_device_observation
+            action, _ = subpolicy.predict(device_obs)
+            _, __, done, info = self.wrapped_env.step(action)
+
+        elif action == 1:
+            device_obs = self.local_only_device_observation
+            action, _ = subpolicy.predict(device_obs)
+            _, __, done, info = self.wrapped_env.step(action)
+
+        else:
+            raise ValueError
 
         # delay is over update
         if self.step_cnt >= steps:
@@ -964,27 +983,15 @@ class NavigationEnvMeta(gym.Env, gym.utils.EzPickle):
             self.stale_local_obs = np.copy(local_obs)
             self.step_cnt = 0
 
-        reward = 0
-        if action == 0:
-            device_obs = self.full_global_device_observation
-            action, _ = subpolicy.predict(device_obs)
-            _, __, done, info = self.wrapped_env.step(action)
-
-        elif action == 1:
-            device_obs = self.local_only_device_observation
-            action, _ = subpolicy.predict(device_obs)
-            _, __, done, info = self.wrapped_env.step(action)\
-
-        else:
-            raise ValueError
-
         if self.wrapped_env.energy <= 0:
             done = True
 
         if done and self.wrapped_env.achieve_goal:
             reward = 1
+
         elif done and not self.wrapped_env.achieve_goal:
             reward = -1
+
         obs = self.server_observation
         return obs, reward, done, {}
 
