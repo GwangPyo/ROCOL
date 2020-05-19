@@ -9,7 +9,7 @@ from delays import TruncatedLogNormalDelay
 from default_config import config, save_config
 import tensorflow as tf
 import warnings
-
+import scipy.optimize
 
 def meta_save_name(config_value):
     return save_config["directory"] + "/" + "timer_heuristic{}".format(config_value)
@@ -27,6 +27,7 @@ def reservation_heurstic(obs, thresh_hold = 20):
 
 
 def heuristic_eval(x):
+
     def heuristic(x):
         def inner(obs):
             return reservation_heurstic(obs, thresh_hold=x)
@@ -36,7 +37,7 @@ def heuristic_eval(x):
     subpolicies = ["obs_range/ppo2_default_{}.zip".format(3),  "obs_range/ppo_local.zip"]
     env = NavigationEnvMeta(subpolicies=subpolicies, **config)
 
-    func = heuristic()
+    func = heuristic(x)
     for _ in range(100):
         env.reset()
         done = False
@@ -44,7 +45,7 @@ def heuristic_eval(x):
             # env.render()
             dict_obs = NavigationEnvMeta.dict_observation(env)
             obs = dict_obs["network_state"] * 10
-            action = heuristic(obs)
+            action = func(obs)
 
             obs, reward, done, info = env.step(action)
             if done:
@@ -53,7 +54,7 @@ def heuristic_eval(x):
                 else:
                     scores.append(0)
 
-    return np.average([scores])
+    return -np.mean(scores)
 
 
 if __name__ == "__main__":
@@ -69,6 +70,7 @@ if __name__ == "__main__":
     print(config)
 
     env = NavigationEnvMeta(subpolicies=subpolicies, **config)
+    """
     history = []
     scores = []
 
@@ -98,3 +100,6 @@ if __name__ == "__main__":
     env.close()
     print(config)
     del env
+    """
+
+    print(scipy.optimize.minimize(heuristic_eval, x0=np.asarray([13])))
