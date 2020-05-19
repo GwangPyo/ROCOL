@@ -7,8 +7,7 @@ from stable_baselines import TRPO, PPO2, SAC, ACKTR, DDPG, TD3, ACER, DQN
 from stable_baselines.common.vec_env import DummyVecEnv, SubprocVecEnv
 from stable_baselines.ddpg.noise import OrnsteinUhlenbeckActionNoise
 from stable_baselines.common.callbacks import EvalCallback
-
-from navigation_env import NavigationEnvDefault, NavigationEnvWall, NavigationEnvMeta
+from navigation_env import *
 from stable_baselines.gail import ExpertDataset, generate_expert_traj
 import os
 import tensorflow as tf
@@ -32,25 +31,23 @@ config = {
 }
 
 
-
-
 if __name__ == "__main__":
-    # os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+    os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
     results = []
     config["max_speed"] = 5
     config["max_obs_range"] = 3
     config["delay_function"] = TruncatedLogNormalDelay
-    for s in [2, 4, 6, 8, 10, 16]:
-        config["delay_kwargs"] = {"mean": 2, "sigma":None, "skewness":s}
-        n_cpu = 8
+    for s in [2, 2.5, 3, 3.5, 4]:
+        config["delay_kwargs"] = {"mean": s, "sigma":None, "skewness":s}
+        n_cpu = 1
         # model = PPO2.load("./obs_range/ppo2_default_{}.zip".format(config["max_obs_range"])) # icies=["logs/best_model.zip"], **config) for _ in range(n_cpu)])
         subpolicies = ["obs_range/ppo2_default_{}.zip".format(3)]
-        env = SubprocVecEnv([lambda: NavigationEnvMeta( subpolicies= subpolicies, **config) for _ in range(n_cpu)])
-        model = PPO2(policy="MlpPolicy", env=env)
+        model = PPO2.load(subpolicies[0])
+        env = SubprocVecEnv([lambda: NavigationEnvInferenced(subpolicies= subpolicies, **config) for _ in range(n_cpu)])
         scores = [ ]
         obs = env.reset()
 
-        for j in range(200000):
+        for j in range(300000):
             actions, _ = model.predict(obs)
             obs, reward, done, info = env.step(actions)
             if j % 100 == 0:
