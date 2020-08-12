@@ -12,7 +12,6 @@ delay_keys = {
     "exp": TruncatedExponentialDelay,
     "const": ConstDelay,
 }
-save_config["directory"] = "mean"
 
 
 def run_map(s, code):
@@ -25,13 +24,16 @@ if __name__ == "__main__":
     warnings.filterwarnings("ignore")
     lock = Lock()
     file_name = "heuristic.py"
-    for s in [16, 12, 10, 8, 6, 4, 2]:
-        with open(file_name, "r") as f:
-            code = f.read()
-        config["delay_kwargs"] = {"mean": s, 'sigma': None, "skewness": 2}
-        save_config["experiment_key"] = config["delay_kwargs"]["mean"]
-        exec(code)
 
+    for s in [2, 4, 6, 8, 10, 12, 14, 16]:
+        for dyn in [5]:
+            with open(file_name, "r") as f:
+                code = f.read()
+            save_config["directory"] = "skewness"
+            config["delay_kwargs"] = {"mean": 2, 'sigma': None, "skewness": s}
+            config["max_speed"] = dyn
+            save_config["experiment_key"] = s
+            exec(code)
 
 
 

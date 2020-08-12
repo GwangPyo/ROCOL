@@ -43,39 +43,37 @@ def eval_model(return_list,
 
 if __name__ == "__main__":
     # subpolicies = PPO2.load("test.zip")
+    print(config)
     warnings.filterwarnings("ignore")
     os.environ["CUDA_VISIBLE_DEVICES"] ="-1"
-    subpolicies = ["obs_range/ppo2_default_{}.zip".format(3), "obs_range/ppo_local.zip"]
+    dynamics = config["max_speed"]
+    subpolicies = ["dynamics/ppo2_dynamics_{}.zip".format(dynamics), "dynamics/ppo2_local_{}.zip".format(dynamics)]
+
     save_name = meta_save_name(config_value=save_config["experiment_key"])
 
     # config["delay_kwargs"]= {"mean": 2.5, 'sigma': None, "skewness":s}
     # save_config["experiment_key"] = config["delay_kwargs"]["skewness"]
 
-    print(config)
-    """
-    env = SubprocVecEnv([lambda: NavigationEnvMeta(subpolicies, **config) for _ in range(8)])
-    
+    env = SubprocVecEnv([lambda: NavigationEnvMeta(subpolicies, **config) for _ in range(8)])    
     meta_policy = PPO2(policy="MlpPolicy", env=env, verbose=1, gamma=0.999, ent_coef=1e-4,
                         policy_kwargs={'act_fun':tf.nn.elu})
-
     meta_policy.learn(15000000, log_interval=5)
-    
+
     try:
         meta_policy.save(save_name)
     except FileNotFoundError:
         os.mkdir(save_config["directory"])
         meta_policy.save(save_name)
-
+    
     del meta_policy
     del env
-    """
-    meta_policy = PPO2.load(save_name)
 
+    meta_policy = PPO2.load(save_name)
     env = NavigationEnvMeta(subpolicies=subpolicies, **config)
     history = []
     scores = []
 
-    for i in range(10000):
+    for i in range(1000):
         obs = env.reset()
 
         done = False
@@ -97,8 +95,12 @@ if __name__ == "__main__":
             print("scores", np.mean(scores))
 
     # scores = env.timer_heuristic(episodes=10000)
+
     with open(log_save_name(), "a") as f:
         f.writelines("meta_{}".format(save_config["experiment_key"]) + "," + str(np.mean(scores)) + "\n")
+
+    with open("histogram_net_action", "wb") as f:
+        pickle.dump(history, f)
 
     env.close()
     print(config)

@@ -1,4 +1,4 @@
-from navigation_env import NavigationEnvMeta, NavigationEnvHeuristic
+from navigation_env import NavigationEnvMeta, NavigationEnvHeuristic, NavigationEnvDefault
 from stable_baselines import PPO2, DQN, ACER, TRPO, ACKTR
 from stable_baselines.common.vec_env import SubprocVecEnv, DummyVecEnv
 import pickle
@@ -57,49 +57,67 @@ def heuristic_eval(x):
     return -np.mean(scores)
 
 
-if __name__ == "__main__":
+def eval_subpolicy_step(env):
+    env.reset()
+    done = False
+    reward = 0
+    while not done:
+        action = 1
+        _, reward, done, _ = env.step(action)
 
+    if reward > 0:
+        return 1
+    else:
+        return 0
+
+
+def eval_subpolicy(env):
+    scores = []
+    for i in range(10000):
+        scores.append(eval_subpolicy_step(env))
+        if i % 100 == 0:
+            print( i , "/", 10000, "\t{}".format(np.mean(scores)))
+    return scores
+
+
+def get_ideal(configure, epochs=10000):
+    environment = NavigationEnvDefault(**configure)
+    ideal_policy = PPO2.load("obs_range/ppo2_default_3.zip")
+    scores = []
+    for _ in range(epochs):
+        obs = environment.reset()
+        done = False
+        reward = 0
+        while not done:
+            action, _ = ideal_policy.predict(obs)
+            obs, reward, done, info = environment.step(action)
+        # success
+        if reward > 0:
+            scores.append(1)
+        else:
+            scores.append(0)
+    return scores
+
+
+if __name__ == "__main__":
     warnings.filterwarnings("ignore")
     os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
-    subpolicies = ["obs_range/ppo2_default_{}.zip".format(3),  "obs_range/ppo_local.zip"]
+    policy = PPO2.load("obs_range/ppo2_default_3.zip")
+    # for dyn in [1, 3, 5, 7, 9]:
+    dy = config["max_speed"]
+    subpolicies = ["dynamics/ppo2_dynamics_{}.zip".format(dy), "dynamics/ppo2_local_{}.zip".format(dy)]
     save_name = meta_save_name(config_value=save_config["experiment_key"])
 
     # config["delay_kwargs"]= {"mean": 2.5, 'sigma': None, "skewness":s}
     # save_config["experiment_key"] = config["delay_kwargs"]["skewness"]
-
+    # config["max_speed"] = dyn
     print(config)
+    env= NavigationEnvMeta(subpolicies=subpolicies, **config)
+    scores = eval_subpolicy(env)# get_ideal(config)
 
-    env = NavigationEnvMeta(subpolicies=subpolicies, **config)
-    """
-    history = []
-    scores = []
-
-    for i in range(10000):
-        env.reset()
-        done = False
-        while not done:
-            # env.render()
-            dict_obs = NavigationEnvMeta.dict_observation(env)
-            obs = dict_obs["network_state"] * 10
-            action = reservation_heurstic(obs)
-
-            obs, reward, done, info = env.step(action)
-            if done:
-                if reward > 0:
-                    scores.append(1)
-                else:
-                    scores.append(0)
-        if i % 100 == 0:
-            print(i, "/", 10000)
-            print("scores", np.mean(scores))
-
-    # scores = env.timer_heuristic(episodes=10000)
     with open(log_save_name(), "a") as f:
-        f.writelines("heuristic_{}".format(save_config["experiment_key"]) + "," + str(np.mean(scores)) + "\n")
+        f.writelines("subpolicy_{}".format(save_config["experiment_key"]) + "," + str(np.mean(scores)) + "\n")
 
     env.close()
     print(config)
     del env
-    """
-
-    print(scipy.optimize.minimize(heuristic_eval, x0=np.asarray([13])))

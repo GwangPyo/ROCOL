@@ -2,7 +2,7 @@ from delays import *
 
 config = {
     "max_speed": 5, "delay_function": TruncatedLogNormalDelay, "delay_kwargs": {"mean": 2, "sigma": 2},
-    "max_obs_range": 3
+    "max_obs_range": 3, "network_accuracy": 1
 }
 
 save_config = {

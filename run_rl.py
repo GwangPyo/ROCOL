@@ -34,16 +34,22 @@ config = {
 if __name__ == "__main__":
     os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
     results = []
-    config["max_speed"] = 5
+
     config["max_obs_range"] = 3
     config["delay_function"] = TruncatedLogNormalDelay
-    for s in [2, 2.5, 3, 3.5, 4]:
-        config["delay_kwargs"] = {"mean": s, "sigma":None, "skewness":s}
-        n_cpu = 1
+    for dy in [5]:
+        # config["delay_kwargs"] = {"mean": s, "sigma":None, "skewness":s}
+        config["max_speed"] = dy
+        n_cpu = 36
         # model = PPO2.load("./obs_range/ppo2_default_{}.zip".format(config["max_obs_range"])) # icies=["logs/best_model.zip"], **config) for _ in range(n_cpu)])
-        subpolicies = ["obs_range/ppo2_default_{}.zip".format(3)]
-        model = PPO2.load(subpolicies[0])
-        env = SubprocVecEnv([lambda: NavigationEnvInferenced(subpolicies= subpolicies, **config) for _ in range(n_cpu)])
+        # subpolicies = ["obs_range/ppo2_default_{}.zip".format(3)]
+        model = PPO2.load("obs_range/ppo_local.zip")
+
+        env = SubprocVecEnv([lambda: NavigationEnvLocal(**config) for _ in range(n_cpu)])
+        model.set_env(env)
+        model.verbose = 1
+        model.learn(15000000)
+        model.save("dynamics/ppo2_local_{}".format(config["max_speed"]))
         scores = [ ]
         obs = env.reset()
 
@@ -54,8 +60,8 @@ if __name__ == "__main__":
                 print(j, "/", 200000)
         for i in range(n_cpu):
             scores = scores + env.get_attr("last_score", i)
-        with open("./skewness/scores.csv", "a") as f:
-            f.writelines("local_{}".format(config["delay_kwargs"]["skewness"]) + "," + str(np.mean(scores)) + "\n")
+        with open("./dynamics/scores.csv", "a") as f:
+            f.writelines("device_{}".format(config["max_speed"]) + "," + str(np.mean(scores)) + "\n")
 
         env.close()
         del env

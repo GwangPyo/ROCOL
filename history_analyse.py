@@ -9,7 +9,7 @@ from multiprocessing import Queue
 
 def __get_bin(hist, q):
     policy_one, policy_zero = discriminate_policy(hist)
-    n, _, _ = plt.hist([policy_zero, policy_one])
+    n, _, _ = plt.hist([policy_zero, policy_one], bins=10)
     q.put(n)
     plt.clf()
 
@@ -31,8 +31,9 @@ def discriminate_policy(history):
             policy_zero.append(h[0])
         else:
             policy_one.append(h[0])
-    print("p_zero mean", np.mean(policy_zero),"num p_zero", len(policy_zero))
-    print("p_one mean", np.mean(policy_one), "num_p_one", len(policy_one))
+
+    print("p_zero mean", np.mean(policy_zero * 10),"num p_zero", len(policy_zero))
+    print("p_one mean", np.mean(policy_one * 10), "num_p_one", len(policy_one))
     return policy_one, policy_zero
 
 
@@ -54,11 +55,14 @@ def plot_bins(bins):
         except ZeroDivisionError:
             ratio.append(0)
     ratio = np.asarray(ratio)
-    plt.bar(np.linspace(0, 128, 10), ratio, width=12)
-    plt.bar(np.linspace(0, 128, 10), 1 - ratio, bottom=ratio, width=12)
+    plt.bar(np.linspace(0, 10, num=10), ratio, width=1, color='green', label='edge')
+    plt.bar(np.linspace(0, 10, num=10), (1 - ratio), bottom=ratio, width=1, color='orange', label='device')
+    plt.xlabel("delay")
+    plt.ylabel("action selection ratio")
+    plt.legend()
     plt.show()
 
 
 if __name__ == "__main__":
-    bins = load_meta()
+    bins = load_meta("histogram_net_action")
     plot_bins(bins)

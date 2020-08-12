@@ -370,7 +370,7 @@ class NavigationEnvDefault(gym.Env, EzPickle):
 
             obstacle.linearVelocity.Set(vel[0], vel[1])
             speed = np.linalg.norm(obstacle.linearVelocity)
-            self.speed_table[i] = speed / self.max_speed
+            self.speed_table[i] = speed / 5
             if coin == 0:
                 self.speed_table[i] *= -1
             range_= MovingRange.from_metadata(OBSTACLE_POSITIONS[i])
@@ -507,17 +507,9 @@ class NavigationEnvDefault(gym.Env, EzPickle):
             moving_range = o.moving_range.out_of_range(o)
             if moving_range != 0:
                 speed = np.random.uniform(low=self.min_speed, high=self.max_speed)
-                """
-                # speed = self.speed_table[i] * self.max_speed + np.random.normal(loc=0, scale=0.25)
-            
-                if speed >= self.max_speed:
-                    speed = self.max_speed
-                elif speed <= self.min_speed:
-                    speed = self.min_speed
-                """
                 next_velocity = (speed * moving_range) * o.moving_range.move_direction
                 o.linearVelocity.Set(next_velocity[0], next_velocity[1])
-                self.speed_table[i] = moving_range  * speed / self.max_speed
+                self.speed_table[i] = moving_range  * speed / 5
 
         self.energy -= 1e-3
         pos = np.array(self.drone.position)
@@ -532,7 +524,7 @@ class NavigationEnvDefault(gym.Env, EzPickle):
         if self.energy <= 0:
             done = True
         if done and not self.achieve_goal:
-            reward = -1
+            reward = 0
         info = {
             'success':
                 self.achieve_goal,
@@ -837,7 +829,7 @@ class NavigationEnvMeta(gym.Env, gym.utils.EzPickle):
         "lognormal":lambda avg, sigma: np.random.lognormal(avg, sigma)
     }
 
-    def __init__(self, subpolicies, network_accuracy=0.9, average_delay=10, global_data_decay=0, delay_function=None,
+    def __init__(self, subpolicies, network_accuracy=1, average_delay=10, global_data_decay=0, delay_function=None,
                  correction_model=None, delay_kwargs=None,
                  *args, **kwargs):
         super(EzPickle, self).__init__()
@@ -850,7 +842,7 @@ class NavigationEnvMeta(gym.Env, gym.utils.EzPickle):
 
                 self.subpolicies[i] = PPO2.load(self.subpolicies[i])
 
-        self.network_accuracy = network_accuracy
+        self.network_error = 1 - network_accuracy
         self.average_delay = average_delay
         self.global_data_decay = global_data_decay
         self.correction_model = correction_model
@@ -908,7 +900,11 @@ class NavigationEnvMeta(gym.Env, gym.utils.EzPickle):
         self.step_cnt = 0
         fresh_obs = self.wrapped_env.dict_observation()
         fresh_obs["network_state"] = self.delay
-        fresh_obs["staleness"] = self.step_cnt / self.delay
+        if 1 > self.network_error > 0:
+            fresh_obs["network_state"] += np.random.normal(0, self.network_error)
+        elif self.network_error == 1:
+            fresh_obs["network_state"] = 0
+        fresh_obs["staleness"] = self.step_cnt/self.delay
         local_obs = self.array_observation(fresh_obs, self.local_observation_keys)
         self.stale_global_obs = np.copy(self.array_observation(fresh_obs, self.device_global_observation_keys))
         self.stale_local_obs = np.copy(local_obs)
@@ -1134,18 +1130,13 @@ class NavigationEnvNetTest(NavigationEnvMeta):
         return np.copy(obs), reward, done, {}
 
 
-class NavigationEnvInferenced(NavigationEnvMeta):
+class NavigationEnvPartialObs(NavigationEnvMeta):
     def __init__(self, **kwargs):
         kwargs["subpolicies"] = []
         super().__init__(**kwargs)
         self.wrapped_env = NavigationEnvDefault(**kwargs)
-        obs_shape = np.prod(self.wrapped_env.observation_space.shape)
-        action_shape = np.prod(self.wrapped_env.action_space.shape)
-        self.next_state_network = Network(layer_structure=[64, 64, 64, 64], action_shape=action_shape, state_shape=obs_shape,
-                                          output_shape=obs_shape, name='0')
-        self.next_state_network.network.load_weights("env_model.h5")
         self.obs_before = None
-        self.verbose = True
+        self.verbose = False
 
     @property
     def action_space(self):
@@ -1159,35 +1150,29 @@ class NavigationEnvInferenced(NavigationEnvMeta):
         self.obs_before = np.copy(self.wrapped_env.reset())
         self.step_cnt = 0
         self.network_state()
+        self.update_obs()
         return np.copy(self.obs_before)
-
-    def next_obs(self, action):
-        # obs = np.expand_dims(self.obs_before, axis=0)
-        return self.next_state_network.predict(self.obs_before, action).flatten()
 
     def step(self, action):
         steps = self.net_state_to_delay(self.delay)
         self.step_cnt += 1
         obs, reward, done, info = self.wrapped_env.step(action)
         # obs = self.next_state_network.predict(self.obs_before
+        obs_real = np.copy(obs)
         if self.step_cnt >= steps:
             self.step_cnt = 0
             self.network_state()
-            self.obs_before = np.copy(obs)
+            self.update_obs()
         else:
-            if self.verbose:
-                obs_real = np.copy(obs)
-            obs = self.next_obs(action)
-            if self.verbose:
+            obs = self.full_global_device_observation
+
+        if self.verbose:
                 print("state real")
                 print(obs_real)
                 print("observation")
                 print(obs)
-                print("mse {:.4f}".format(np.sqrt(np.mean(np.square(obs_real - obs)))))
-                print("sup error {:.4f}".format(np.max(np.abs(obs_real - obs))))
         self.obs_before = obs
         return np.copy(obs), reward, done, info
-
 
 
 class NavigationEnvMetaNoNet(NavigationEnvMeta):
@@ -1198,3 +1183,157 @@ class NavigationEnvMetaNoNet(NavigationEnvMeta):
         dict_obs = self.wrapped_env.dict_observation()
         return dict_obs
 
+
+class AdversarialRLEnv(NavigationEnvMeta):
+    P = 0
+    A = 1
+    protagonist = None
+    antagonist = None
+
+    class DummyEnv(gym.Env):
+        def __init__(self, action_space, obs_space):
+            self.action_space = action_space
+            self.observation_space = obs_space
+
+    def __init__(self, *args, **kwargs):
+        self.wrapped_env = NavigationEnvDefault(**kwargs)
+
+        subpolicies = [self.protagonist, self.antagonist]
+        super().__init__(subpolicies=subpolicies, *args, **kwargs)
+
+        self.step = None
+        self.current_obs = None
+        self.cursor = AdversarialRLEnv.P
+        self.cursor = AdversarialRLEnv.A
+
+    @classmethod
+    def get_models(cls, obs_space, p_action_space, a_action_space):
+        protagonist_env = cls.DummyEnv(obs_space=obs_space, action_space=p_action_space)
+        antagonist_env = cls.DummyEnv(obs_space=obs_space, action_space=a_action_space)
+
+        from stable_baselines import PPO2
+        from stable_baselines.common.vec_env import DummyVecEnv
+        protagonist = PPO2(env=DummyVecEnv([lambda:protagonist_env]), policy='MlpPolicy')
+        antagonist = PPO2(env=DummyVecEnv([lambda:antagonist_env]), policy='MlpPolicy')
+        return protagonist, antagonist
+
+    def render(self, mode="human"):
+        return self.wrapped_env.render()
+
+    @classmethod
+    def set_protagonist(cls, protagonist):
+        cls.protagonist = protagonist
+
+    @classmethod
+    def set_antagonist(cls, antagonist):
+        cls.antagonist = antagonist
+
+    def switch(self, cursor):
+
+        if cursor == AdversarialRLEnv.A:
+            self.cursor = AdversarialRLEnv.A
+            self.step = self._step_antagonist
+        else:
+            self.cursor = AdversarialRLEnv.P
+            self.step = self._step_protagonist
+
+    def learn_protagonist(self, steps):
+        self.switch(cursor=self.P)
+        self.protagonist.learn(steps)
+
+    def learn_antagonist(self, steps):
+        self.switch(cursor=self.A)
+        self.antagonist.learn(steps)
+
+    @property
+    def observation_space(self):
+        return self.wrapped_env.observation_space
+
+    @property
+    def protagonist_action_space(self):
+        return self.wrapped_env.action_space
+
+    @property
+    def antagonist_action_space(self):
+        return gym.spaces.Box(low=0, high=1, shape=(2, ))
+
+    @property
+    def action_space(self):
+        if self.cursor == AdversarialRLEnv.P:
+            return self.protagonist_action_space
+
+        elif self.cursor == AdversarialRLEnv.A:
+            return self.antagonist_action_space
+        else:
+            raise ValueError("Env cursor must be 0 (Protagonist) or 1 (Antagonist)!")
+
+    def reset(self):
+        self.current_obs = self.wrapped_env.reset()
+        return self.current_obs.copy()
+
+    def network_state(self, action):
+        self.delay = self.delay_function()
+        if self.delay <= 1:
+            self.delay = 1
+        return self.delay
+
+    def _step_antagonist(self, action):
+        self.delay = action
+        steps = self.net_state_to_delay(self.delay)
+        subpolicy = self.subpolicies[0]
+        self.current_subpolicy = action
+        self.action_histogram[action] += 1
+        reward = 0
+        done = False
+        for _ in range(steps):
+            device_obs = self.full_global_device_observation
+            device_action, _ = subpolicy.predict(device_obs)
+            _, __, done, info = self.wrapped_env.step(device_action)
+            if done:
+                break
+
+        self.update_obs()
+        if self.wrapped_env.energy <= 0:
+            done = True
+
+        if done and self.wrapped_env.achieve_goal:
+            reward = 1
+
+        elif done and not self.wrapped_env.achieve_goal:
+            reward = -1
+
+        obs = self.server_observation
+        return obs, -reward, done, {}
+
+    def _step_protagonist(self, action):
+        delay, _ = self.antagonist.predict(self.server_observation)
+        self.delay = delay
+        steps = self.net_state_to_delay(self.delay)
+        subpolicy = self.subpolicies[0]
+        reward = 0
+        done = False
+        for _ in range(steps):
+            device_obs = self.full_global_device_observation
+            device_action, _ = subpolicy.predict(device_obs)
+            _, __, done, info = self.wrapped_env.step(device_action)
+            if done:
+                break
+
+        self.update_obs()
+        if self.wrapped_env.energy <= 0:
+            done = True
+
+        if done and self.wrapped_env.achieve_goal:
+            reward = 1
+
+        elif done and not self.wrapped_env.achieve_goal:
+            reward = -1
+
+        obs = self.server_observation
+        return obs, reward, done, {}
+
+if __name__ == '__main__':
+    import os
+    from default_config import config
+    os.environ["CUDA_VISIBLE_DEVICES"] = '-1'
+    AdversarialRLEnv(**config)
